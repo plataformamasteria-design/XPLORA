@@ -286,7 +286,8 @@ class App(SimpleHTTPRequestHandler):
         password = os.environ.get("PANEL_PASSWORD", "")
         if not password:
             return True
-        expected = "Basic " + base64.b64encode(f"admin:{password}".encode()).decode()
+        username = os.environ.get("PANEL_USERNAME", "admin")
+        expected = "Basic " + base64.b64encode(f"{username}:{password}".encode()).decode()
         return hmac.compare_digest(self.headers.get("Authorization", ""), expected)
 
     def require_auth(self) -> bool:

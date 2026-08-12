@@ -47,7 +47,7 @@ capturado pelo FFmpeg.
 
 Configure no serviço:
 
-- `PANEL_PASSWORD`: senha obrigatória recomendada para proteger o painel público.
+- `PANEL_USERNAME` e `PANEL_PASSWORD`: credenciais para proteger o painel público.
 - `MEET_BOT_NAME`: nome exibido pelo convidado no Meet.
 - `WHISPER_MODEL`: modelo local, por padrão `small`.
 
