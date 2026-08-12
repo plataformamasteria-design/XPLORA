@@ -115,12 +115,30 @@ def fill_guest_name(page) -> None:
                     log(f"Campo de nome mudou durante o preenchimento; tentando novamente: {error}")
 
 
-def page_denied(page) -> bool:
+def page_denied(page) -> str | None:
     try:
         body = page.locator("body").inner_text(timeout=1_000)
-        return bool(DENIED_PATTERN.search(body))
+        match = DENIED_PATTERN.search(body)
+        if not match:
+            return None
+        start = max(0, match.start() - 160)
+        end = min(len(body), match.end() + 240)
+        return " ".join(body[start:end].split())
     except Exception:
-        return False
+        return None
+
+
+def save_diagnostic(page, label: str) -> None:
+    directory = Path(os.environ.get("MEET_DIAGNOSTICS_DIR", "data")).resolve()
+    directory.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    base = directory / f"meet_{label}_{stamp}"
+    try:
+        page.screenshot(path=str(base.with_suffix(".png")), full_page=True)
+        base.with_suffix(".txt").write_text(page.locator("body").inner_text(timeout=2_000), encoding="utf-8")
+        log(f"Diagnóstico salvo: {base.name}.png/.txt")
+    except Exception as error:
+        log(f"Não foi possível salvar o diagnóstico do Meet: {error}")
 
 
 def wait_for_admission(page, timeout_seconds: int) -> None:
@@ -137,11 +155,18 @@ def wait_for_admission(page, timeout_seconds: int) -> None:
         if first_aria_button(page, LEAVE_PATTERN):
             log("Entrada na reunião confirmada.")
             return
-        if page_denied(page):
-            fail("O Meet informou que o robô não pode entrar na reunião.")
         if not requested:
             fill_guest_name(page)
             requested = click_join(page)
+            if requested:
+                log("Aguardando aprovação do organizador, quando exigida.")
+                page.wait_for_timeout(1_000)
+                continue
+        denial = page_denied(page)
+        if denial:
+            log(f"Mensagem visível do Meet: {denial}")
+            save_diagnostic(page, "entrada_recusada")
+            fail("O Meet recusou a entrada. Verifique se a reunião está ativa e permite convidados.")
         page.wait_for_timeout(1_000)
     fail("Entrada cancelada pelo operador.")
 
@@ -164,22 +189,31 @@ class Recorder:
     source: str
     output: Path
     process: subprocess.Popen[str] | None = None
+    log_handle: object | None = None
 
     def start(self) -> None:
         command = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "warning", "-f", "pulse", "-i", self.source,
                    "-c:a", "aac", "-b:a", "160k", str(self.output)]
+        log_path = self.output.with_suffix(".ffmpeg.log")
         try:
-            self.process = subprocess.Popen(command, text=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            self.log_handle = log_path.open("w", encoding="utf-8")
+            self.process = subprocess.Popen(command, text=True, stdout=subprocess.DEVNULL, stderr=self.log_handle)
         except FileNotFoundError as error:
             fail("ffmpeg não foi encontrado. Instale ffmpeg na máquina Linux do robô.")
         time.sleep(0.8)
         if self.process.poll() is not None:
-            details = (self.process.stderr.read() if self.process.stderr else "").strip()
+            if self.log_handle:
+                self.log_handle.close()
+                self.log_handle = None
+            details = log_path.read_text(encoding="utf-8", errors="replace").strip() if log_path.exists() else ""
             fail(f"A gravação de áudio não iniciou: {details or 'ffmpeg encerrou inesperadamente.'}")
         log(f"Gravação local iniciada: {self.output.name}")
 
     def stop(self) -> None:
         if not self.process or self.process.poll() is not None:
+            if self.log_handle:
+                self.log_handle.close()
+                self.log_handle = None
             return
         log("Finalizando arquivo de áudio…")
         self.process.send_signal(signal.SIGINT)
@@ -188,6 +222,10 @@ class Recorder:
         except subprocess.TimeoutExpired:
             self.process.terminate()
             self.process.wait(timeout=5)
+        if self.log_handle:
+            self.log_handle.close()
+            self.log_handle = None
+        self.process = None
 
 
 def transcribe(recording: Path) -> None:

@@ -15,6 +15,7 @@
       </div>
       <div class="live"><b></b> Painel local</div>
     </header>
+    <section id="readiness" class="readiness checking" aria-live="polite"><b>Verificando ambiente…</b><span>Validando navegador, áudio, gravação e transcrição.</span></section>
     <section class="hero">
       <div>
         <p class="eyebrow">NOVO ENVIO</p>
@@ -36,7 +37,7 @@
     <section class="section-head"><div><p class="eyebrow">ATIVIDADE</p><h2>Reuniões</h2></div><button id="refresh" class="ghost">Atualizar</button></section>
     <section id="meetings" class="meetings"><div class="empty">Ainda não há robôs enviados.</div></section>
     <section class="section-head transcript-head"><div><p class="eyebrow">WHISPER LOCAL</p><h2>Transcrever gravação</h2></div><button id="load-recordings" class="ghost">Buscar arquivos</button></section>
-    <section class="transcribe"><div><label>Gravação encontrada<select id="recording-select"><option value="">Busque os arquivos de gravação</option></select></label><p class="muted">Gera arquivos .txt, .srt e .json ao lado da gravação. O áudio não sai desta máquina.</p></div><button class="primary" id="transcribe" type="button">Transcrever</button></section>
+    <section class="transcribe"><div><label>Gravação encontrada<select id="recording-select"><option value="">Busque os arquivos de gravação</option></select></label><p class="muted">Gera arquivos .txt, .srt e .json ao lado da gravação. O áudio não sai desta máquina.</p><div id="recording-artifacts" class="artifacts"></div></div><button class="primary" id="transcribe" type="button">Transcrever</button></section>
   </main>
   <div id="toast" role="status"></div>
   <script src="/static/app.js"></script>

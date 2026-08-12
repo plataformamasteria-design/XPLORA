@@ -13,8 +13,11 @@ from __future__ import annotations
 import json
 import base64
 import hmac
+import importlib.util
+import mimetypes
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -26,7 +29,7 @@ from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 ROOT = Path(__file__).resolve().parent
 STORAGE_DIR = Path(os.environ.get("MEET_STORAGE_DIR", str(ROOT / "storage"))).resolve()
@@ -37,6 +40,7 @@ DEFAULT_PROFILE_DIR = STORAGE_DIR / "perfil-meet"
 BOT_FILE = ROOT / "meet_bot.py"
 TRANSCRIBER_FILE = ROOT / "transcribe_recording.py"
 LOCK = threading.RLock()
+LAUNCH_LOCK = threading.Lock()
 PROCESSES: dict[str, subprocess.Popen[str]] = {}
 MEETINGS: dict[str, dict] = {}
 ALLOWED_AUDIO = {".wav", ".mp3", ".m4a", ".aac", ".flac", ".ogg", ".webm", ".mp4", ".mkv"}
@@ -47,7 +51,7 @@ def now() -> str:
 
 
 def save_meetings() -> None:
-    DATA_DIR.mkdir(exist_ok=True)
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
     temp = MEETINGS_FILE.with_suffix(".tmp")
     temp.write_text(json.dumps(list(MEETINGS.values()), ensure_ascii=False, indent=2), encoding="utf-8")
     temp.replace(MEETINGS_FILE)
@@ -118,6 +122,31 @@ def detect_monitor_source() -> str:
         raise ValueError("A detecção de áudio excedeu o tempo esperado.") from error
 
 
+def runtime_health() -> dict:
+    checks: list[dict] = []
+
+    def add(name: str, ok: bool, detail: str) -> None:
+        checks.append({"name": name, "ok": ok, "detail": detail})
+
+    add("Robô", BOT_FILE.is_file(), "meet_bot.py disponível." if BOT_FILE.is_file() else "meet_bot.py ausente.")
+    add("Transcrição", TRANSCRIBER_FILE.is_file(), "Whisper integrado." if TRANSCRIBER_FILE.is_file() else "transcribe_recording.py ausente.")
+    add("FFmpeg", bool(shutil.which("ffmpeg")), "FFmpeg disponível." if shutil.which("ffmpeg") else "FFmpeg não encontrado.")
+    add("PulseAudio", bool(shutil.which("pactl")), "pactl disponível." if shutil.which("pactl") else "pactl não encontrado.")
+    add("Tela virtual", bool(os.environ.get("DISPLAY")), f"DISPLAY={os.environ.get('DISPLAY')}" if os.environ.get("DISPLAY") else "DISPLAY não configurado.")
+    add("Playwright", importlib.util.find_spec("playwright") is not None, "Playwright instalado." if importlib.util.find_spec("playwright") else "Playwright não instalado.")
+    add("Whisper local", importlib.util.find_spec("faster_whisper") is not None, "faster-whisper instalado." if importlib.util.find_spec("faster_whisper") else "faster-whisper não instalado.")
+    try:
+        STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+        add("Armazenamento", os.access(STORAGE_DIR, os.W_OK), f"Persistência em {STORAGE_DIR}.")
+    except OSError as error:
+        add("Armazenamento", False, f"Armazenamento indisponível: {error}")
+    try:
+        add("Áudio", True, f"Fonte automática: {detect_monitor_source()}")
+    except ValueError as error:
+        add("Áudio", False, str(error))
+    return {"ready": all(item["ok"] for item in checks), "checks": checks}
+
+
 def new_log_reader(meeting_id: str, process: subprocess.Popen[str], mode: str) -> None:
     def read_output() -> None:
         assert process.stdout is not None
@@ -130,8 +159,12 @@ def new_log_reader(meeting_id: str, process: subprocess.Popen[str], mode: str) -
                 meeting["logs"] = (meeting.get("logs", []) + [event])[-200:]
                 if "Entrada na reunião confirmada" in event:
                     meeting["status"] = "in_meeting"
+                    meeting["joined_at"] = now()
                 elif "Iniciando transcrição local" in event:
                     meeting["status"] = "transcribing"
+                elif "Transcrição concluída" in event:
+                    meeting["status"] = "transcribed"
+                    meeting["transcribed_at"] = now()
                 save_meetings()
         code = process.wait()
         with LOCK:
@@ -140,7 +173,14 @@ def new_log_reader(meeting_id: str, process: subprocess.Popen[str], mode: str) -
                 return
             intentional = bool(meeting.get("stop_requested"))
             if mode == "bot":
-                meeting["status"] = "removed" if intentional else ("finished" if code == 0 else "failed")
+                if code == 0 and meeting.get("status") == "transcribed":
+                    pass
+                elif code == 0:
+                    meeting["status"] = "removed" if intentional else "finished"
+                elif meeting.get("status") == "transcribing":
+                    meeting["status"] = "transcription_failed"
+                else:
+                    meeting["status"] = "failed"
                 meeting["finished_at"] = now()
             else:
                 meeting["status"] = "transcribed" if code == 0 else "transcription_failed"
@@ -151,7 +191,7 @@ def new_log_reader(meeting_id: str, process: subprocess.Popen[str], mode: str) -
     threading.Thread(target=read_output, daemon=True).start()
 
 
-def launch_bot(data: dict) -> dict:
+def _launch_bot(data: dict) -> dict:
     if not data.get("consent"):
         raise ValueError("Confirme que todos os participantes autorizaram a gravação.")
     if not BOT_FILE.exists():
@@ -160,8 +200,8 @@ def launch_bot(data: dict) -> dict:
     url = validate_meet_url(str(data.get("url", "")))
     audio_source = detect_monitor_source()
 
-    default_profile = str(DEFAULT_PROFILE_DIR.relative_to(ROOT))
-    default_recordings = str(DEFAULT_RECORDINGS_DIR.relative_to(ROOT))
+    default_profile = DEFAULT_PROFILE_DIR.relative_to(ROOT).as_posix()
+    default_recordings = DEFAULT_RECORDINGS_DIR.relative_to(ROOT).as_posix()
     profile = safe_local_dir(str(data.get("profile", default_profile)), DEFAULT_PROFILE_DIR)
     recordings_dir = safe_local_dir(str(data.get("recordings_dir", default_recordings)), DEFAULT_RECORDINGS_DIR)
     profile.mkdir(parents=True, exist_ok=True)
@@ -176,8 +216,8 @@ def launch_bot(data: dict) -> dict:
         "created_at": now(),
         "max_minutes": None,
         "audio_source": audio_source,
-        "recordings_dir": str(recordings_dir.relative_to(ROOT)),
-        "profile": str(profile.relative_to(ROOT)),
+        "recordings_dir": recordings_dir.relative_to(ROOT).as_posix(),
+        "profile": profile.relative_to(ROOT).as_posix(),
         "logs": ["Iniciando o navegador automatizado…", f"Áudio detectado automaticamente: {audio_source}", "Sem limite de duração solicitado."],
     }
     command = [
@@ -186,6 +226,7 @@ def launch_bot(data: dict) -> dict:
     ]
     environment = os.environ.copy()
     environment["MEET_RECORDINGS_DIR"] = str(recordings_dir)
+    environment["MEET_DIAGNOSTICS_DIR"] = str(DATA_DIR)
     environment["MEET_MAX_MINUTES"] = "0"  # Contrato: 0 significa sem limite.
     try:
         process = subprocess.Popen(
@@ -203,6 +244,19 @@ def launch_bot(data: dict) -> dict:
     return meeting
 
 
+def launch_bot(data: dict) -> dict:
+    with LAUNCH_LOCK:
+        with LOCK:
+            active = [
+                MEETINGS.get(meeting_id, {}).get("name", meeting_id)
+                for meeting_id, process in PROCESSES.items()
+                if process.poll() is None and not MEETINGS.get(meeting_id, {}).get("recording")
+            ]
+        if active:
+            raise ValueError(f"Já existe um robô em execução: {active[0]}. Remova-o antes de enviar outro.")
+        return _launch_bot(data)
+
+
 def stop_bot(meeting_id: str) -> dict:
     with LOCK:
         meeting = MEETINGS.get(meeting_id)
@@ -215,10 +269,30 @@ def stop_bot(meeting_id: str) -> dict:
         meeting["stop_requested"] = True
         meeting.setdefault("logs", []).append("Remoção solicitada pelo operador.")
         save_meetings()
+    # Sinaliza somente o processo Python. Ele fecha a chamada e o FFmpeg de modo
+    # gracioso antes de iniciar o Whisper; matar o grupo aqui também derrubaria
+    # Chromium/FFmpeg cedo demais e poderia corromper a gravação.
     try:
-        os.killpg(process.pid, signal.SIGTERM)
-    except (AttributeError, ProcessLookupError):
-        process.terminate()
+        process.send_signal(signal.SIGTERM)
+    except ProcessLookupError as error:
+        raise ValueError("Este robô já encerrou.") from error
+
+    def enforce_graceful_exit() -> None:
+        for _ in range(45):
+            if process.poll() is not None:
+                return
+            with LOCK:
+                status = MEETINGS.get(meeting_id, {}).get("status")
+            if status in {"transcribing", "transcribed"}:
+                return
+            time.sleep(1)
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except (AttributeError, ProcessLookupError):
+            if process.poll() is None:
+                process.kill()
+
+    threading.Thread(target=enforce_graceful_exit, daemon=True).start()
     return meeting
 
 
@@ -229,11 +303,17 @@ def audio_files(recordings_dir: Path) -> list[dict]:
     for item in recordings_dir.rglob("*"):
         if item.is_file() and item.suffix.lower() in ALLOWED_AUDIO:
             stat = item.stat()
+            artifacts = []
+            for suffix, kind in ((".txt", "Texto"), (".srt", "Legendas"), (".json", "JSON")):
+                artifact = item.with_suffix(suffix)
+                if artifact.is_file():
+                    artifacts.append({"name": artifact.name, "type": kind, "path": artifact.relative_to(ROOT).as_posix()})
             found.append({
-                "path": str(item.relative_to(ROOT)),
+                "path": item.relative_to(ROOT).as_posix(),
                 "name": item.name,
                 "size": stat.st_size,
                 "modified_at": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(timespec="seconds"),
+                "artifacts": artifacts,
             })
     return sorted(found, key=lambda item: item["modified_at"], reverse=True)
 
@@ -267,7 +347,7 @@ def launch_transcription(data: dict) -> dict:
     meeting_id = str(uuid.uuid4())
     meeting = {
         "id": meeting_id, "name": f"Transcrição: {recording.name}", "status": "transcribing",
-        "created_at": now(), "recording": str(recording.relative_to(ROOT)),
+        "created_at": now(), "recording": recording.relative_to(ROOT).as_posix(),
         "logs": ["Preparando transcrição local com Whisper…"],
     }
     command = [sys.executable, str(TRANSCRIBER_FILE), str(recording)]
@@ -311,6 +391,24 @@ class App(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def send_local_file(self, path: Path, download: bool = False) -> None:
+        if not path.is_file():
+            self.send_json({"error": "Arquivo não encontrado."}, HTTPStatus.NOT_FOUND)
+            return
+        size = path.stat().st_size
+        mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", mime + ("; charset=utf-8" if mime.startswith("text/") or mime == "application/json" else ""))
+        self.send_header("Content-Length", str(size))
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Cache-Control", "no-store")
+        if download:
+            safe_name = path.name.replace('"', "")
+            self.send_header("Content-Disposition", f'attachment; filename="{safe_name}"')
+        self.end_headers()
+        with path.open("rb") as source:
+            shutil.copyfileobj(source, self.wfile, length=1024 * 1024)
+
     def read_json(self) -> dict:
         length = int(self.headers.get("Content-Length", "0"))
         if length > 100_000:
@@ -318,21 +416,47 @@ class App(SimpleHTTPRequestHandler):
         return json.loads(self.rfile.read(length))
 
     def do_GET(self) -> None:
-        if self.path == "/healthz":
+        route = urlparse(self.path).path
+        if route == "/healthz":
             self.send_json({"status": "ok"})
             return
         if self.require_auth():
             return
-        if self.path == "/api/meetings":
+        if route == "/api/health":
+            self.send_json(runtime_health())
+            return
+        if route == "/api/meetings":
             with LOCK:
                 self.send_json(sorted(MEETINGS.values(), key=lambda item: item["created_at"], reverse=True))
             return
-        if self.path == "/api/recordings":
+        if route == "/api/recordings":
             self.send_json(list_recordings())
             return
-        if self.path in {"/", "/index.html"}:
-            self.path = "/static/index.html"
-        return super().do_GET()
+        if route in {"/", "/index.html"}:
+            self.send_local_file(ROOT / "static" / "index.html")
+            return
+        if route.startswith("/static/"):
+            candidate = (ROOT / unquote(route.lstrip("/"))).resolve()
+            try:
+                candidate.relative_to((ROOT / "static").resolve())
+            except ValueError:
+                self.send_json({"error": "Caminho inválido."}, HTTPStatus.BAD_REQUEST)
+                return
+            self.send_local_file(candidate)
+            return
+        if route.startswith("/files/"):
+            candidate = (ROOT / unquote(route[len("/files/"):])).resolve()
+            try:
+                candidate.relative_to(STORAGE_DIR.resolve())
+            except ValueError:
+                self.send_json({"error": "Caminho inválido."}, HTTPStatus.BAD_REQUEST)
+                return
+            if candidate.suffix.lower() not in ALLOWED_AUDIO | {".txt", ".srt", ".json"}:
+                self.send_json({"error": "Tipo de arquivo não permitido."}, HTTPStatus.BAD_REQUEST)
+                return
+            self.send_local_file(candidate, download=True)
+            return
+        self.send_json({"error": "Rota não encontrada."}, HTTPStatus.NOT_FOUND)
 
     def do_POST(self) -> None:
         if self.require_auth():

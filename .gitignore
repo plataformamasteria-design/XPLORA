@@ -13,3 +13,4 @@ data/
 storage/
 __pycache__/
 *.pyc
+*.ffmpeg.log

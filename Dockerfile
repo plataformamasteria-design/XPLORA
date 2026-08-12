@@ -11,7 +11,8 @@ ENV PYTHONUNBUFFERED=1 \
     MEET_MAX_MINUTES=0 \
     WHISPER_MODEL=small \
     WHISPER_DEVICE=cpu \
-    WHISPER_COMPUTE_TYPE=int8
+    WHISPER_COMPUTE_TYPE=int8 \
+    HF_HOME=/app/storage/huggingface
 
 WORKDIR /app
 
