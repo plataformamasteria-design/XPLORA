@@ -84,6 +84,20 @@ def safe_local_dir(value: str, default: Path) -> Path:
     return candidate
 
 
+def clear_stale_profile_locks(profile: Path) -> list[str]:
+    """Remove somente travas efêmeras deixadas por um Chromium já encerrado."""
+    removed = []
+    for name in ("SingletonLock", "SingletonSocket", "SingletonCookie", "DevToolsActivePort"):
+        lock = profile / name
+        try:
+            if lock.is_symlink() or lock.is_file():
+                lock.unlink()
+                removed.append(name)
+        except FileNotFoundError:
+            continue
+    return removed
+
+
 def validate_meet_url(value: str) -> str:
     parsed = urlparse(value.strip())
     if parsed.scheme != "https" or parsed.hostname != "meet.google.com":
@@ -208,6 +222,7 @@ def _launch_bot(data: dict) -> dict:
     recordings_dir = safe_local_dir(str(data.get("recordings_dir", default_recordings)), DEFAULT_RECORDINGS_DIR)
     profile.mkdir(parents=True, exist_ok=True)
     recordings_dir.mkdir(parents=True, exist_ok=True)
+    cleared_locks = clear_stale_profile_locks(profile)
 
     meeting_id = str(uuid.uuid4())
     meeting = {
@@ -220,7 +235,12 @@ def _launch_bot(data: dict) -> dict:
         "audio_source": audio_source,
         "recordings_dir": recordings_dir.relative_to(ROOT).as_posix(),
         "profile": profile.relative_to(ROOT).as_posix(),
-        "logs": ["Iniciando o navegador automatizado…", f"Áudio detectado automaticamente: {audio_source}", "Sem limite de duração solicitado."],
+        "logs": [
+            "Iniciando o navegador automatizado…",
+            f"Áudio detectado automaticamente: {audio_source}",
+            "Sem limite de duração solicitado.",
+            *([f"Travas temporárias do Chromium removidas: {', '.join(cleared_locks)}."] if cleared_locks else []),
+        ],
     }
     command = [
         sys.executable, str(BOT_FILE), "--url", url, "--profile", str(profile),

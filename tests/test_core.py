@@ -114,6 +114,15 @@ class CoreTests(unittest.TestCase):
         handler.rfile = io.BytesIO()
         self.assertEqual(handler.read_json(), {})
 
+    def test_only_ephemeral_chromium_profile_locks_are_removed(self):
+        with tempfile.TemporaryDirectory() as folder:
+            profile = Path(folder)
+            (profile / "SingletonLock").write_text("stale", encoding="utf-8")
+            (profile / "Cookies").write_text("session", encoding="utf-8")
+            removed = meet_control.clear_stale_profile_locks(profile)
+            self.assertEqual(removed, ["SingletonLock"])
+            self.assertTrue((profile / "Cookies").is_file())
+
     def test_srt_timestamp(self):
         self.assertEqual(srt_timestamp(3661.125), "01:01:01,125")
 
