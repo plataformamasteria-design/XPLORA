@@ -102,6 +102,16 @@ def click_join(page) -> bool:
     return False
 
 
+def fill_guest_name(page) -> None:
+    name = os.environ.get("MEET_BOT_NAME", "Assistente de Transcrição")
+    for pattern in (r"your name", r"seu nome", r"nome"):
+        field = page.get_by_placeholder(re.compile(pattern, re.I))
+        if field.count():
+            field.first.fill(name)
+            log(f"Nome de convidado definido: {name}")
+            return
+
+
 def page_denied(page) -> bool:
     try:
         body = page.locator("body").inner_text(timeout=1_000)
@@ -127,6 +137,7 @@ def wait_for_admission(page, timeout_seconds: int) -> None:
         if page_denied(page):
             fail("O Meet informou que o robô não pode entrar na reunião.")
         if not requested:
+            fill_guest_name(page)
             requested = click_join(page)
         page.wait_for_timeout(1_000)
     fail("Entrada cancelada pelo operador.")
@@ -241,7 +252,10 @@ def main() -> int:
             profile.mkdir(parents=True, exist_ok=True)
             context = playwright.chromium.launch_persistent_context(
                 user_data_dir=str(profile), headless=False,
-                args=["--window-size=1920,1080", "--autoplay-policy=no-user-gesture-required"],
+                args=[
+                    "--window-size=1920,1080", "--autoplay-policy=no-user-gesture-required",
+                    "--no-sandbox", "--disable-dev-shm-usage",
+                ],
                 viewport={"width": 1920, "height": 1080},
             )
             page = context.pages[0] if context.pages else context.new_page()

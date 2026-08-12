@@ -11,6 +11,8 @@ o login do Google continua sendo feito manualmente no perfil persistente do bot.
 from __future__ import annotations
 
 import json
+import base64
+import hmac
 import os
 import re
 import signal
@@ -27,9 +29,11 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 ROOT = Path(__file__).resolve().parent
-DATA_DIR = ROOT / "data"
+STORAGE_DIR = Path(os.environ.get("MEET_STORAGE_DIR", str(ROOT / "storage"))).resolve()
+DATA_DIR = STORAGE_DIR / "data"
 MEETINGS_FILE = DATA_DIR / "meetings.json"
-DEFAULT_RECORDINGS_DIR = ROOT / "recordings"
+DEFAULT_RECORDINGS_DIR = STORAGE_DIR / "recordings"
+DEFAULT_PROFILE_DIR = STORAGE_DIR / "perfil-meet"
 BOT_FILE = ROOT / "meet_bot.py"
 TRANSCRIBER_FILE = ROOT / "transcribe_recording.py"
 LOCK = threading.RLock()
@@ -122,14 +126,19 @@ def new_log_reader(meeting_id: str, process: subprocess.Popen[str], mode: str) -
                 meeting = MEETINGS.get(meeting_id)
                 if not meeting:
                     return
-                meeting["logs"] = (meeting.get("logs", []) + [line.rstrip()])[-200:]
+                event = line.rstrip()
+                meeting["logs"] = (meeting.get("logs", []) + [event])[-200:]
+                if "Entrada na reunião confirmada" in event:
+                    meeting["status"] = "in_meeting"
+                elif "Iniciando transcrição local" in event:
+                    meeting["status"] = "transcribing"
                 save_meetings()
         code = process.wait()
         with LOCK:
             meeting = MEETINGS.get(meeting_id)
             if not meeting:
                 return
-            intentional = meeting.get("status") == "stopping"
+            intentional = bool(meeting.get("stop_requested"))
             if mode == "bot":
                 meeting["status"] = "removed" if intentional else ("finished" if code == 0 else "failed")
                 meeting["finished_at"] = now()
@@ -151,8 +160,10 @@ def launch_bot(data: dict) -> dict:
     url = validate_meet_url(str(data.get("url", "")))
     audio_source = detect_monitor_source()
 
-    profile = safe_local_dir(str(data.get("profile", "perfil-meet")), ROOT / "perfil-meet")
-    recordings_dir = safe_local_dir(str(data.get("recordings_dir", "recordings")), DEFAULT_RECORDINGS_DIR)
+    default_profile = str(DEFAULT_PROFILE_DIR.relative_to(ROOT))
+    default_recordings = str(DEFAULT_RECORDINGS_DIR.relative_to(ROOT))
+    profile = safe_local_dir(str(data.get("profile", default_profile)), DEFAULT_PROFILE_DIR)
+    recordings_dir = safe_local_dir(str(data.get("recordings_dir", default_recordings)), DEFAULT_RECORDINGS_DIR)
     profile.mkdir(parents=True, exist_ok=True)
     recordings_dir.mkdir(parents=True, exist_ok=True)
 
@@ -201,6 +212,7 @@ def stop_bot(meeting_id: str) -> dict:
         if not process or process.poll() is not None:
             raise ValueError("Este robô já não está em execução.")
         meeting["status"] = "stopping"
+        meeting["stop_requested"] = True
         meeting.setdefault("logs", []).append("Remoção solicitada pelo operador.")
         save_meetings()
     try:
@@ -270,6 +282,22 @@ def launch_transcription(data: dict) -> dict:
 
 
 class App(SimpleHTTPRequestHandler):
+    def authenticated(self) -> bool:
+        password = os.environ.get("PANEL_PASSWORD", "")
+        if not password:
+            return True
+        expected = "Basic " + base64.b64encode(f"admin:{password}".encode()).decode()
+        return hmac.compare_digest(self.headers.get("Authorization", ""), expected)
+
+    def require_auth(self) -> bool:
+        if self.authenticated():
+            return False
+        self.send_response(HTTPStatus.UNAUTHORIZED)
+        self.send_header("WWW-Authenticate", 'Basic realm="Meet Control"')
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+        return True
+
     def log_message(self, _format: str, *_args: object) -> None:
         return
 
@@ -289,6 +317,11 @@ class App(SimpleHTTPRequestHandler):
         return json.loads(self.rfile.read(length))
 
     def do_GET(self) -> None:
+        if self.path == "/healthz":
+            self.send_json({"status": "ok"})
+            return
+        if self.require_auth():
+            return
         if self.path == "/api/meetings":
             with LOCK:
                 self.send_json(sorted(MEETINGS.values(), key=lambda item: item["created_at"], reverse=True))
@@ -301,6 +334,8 @@ class App(SimpleHTTPRequestHandler):
         return super().do_GET()
 
     def do_POST(self) -> None:
+        if self.require_auth():
+            return
         try:
             data = self.read_json()
             if self.path == "/api/meetings":
@@ -322,9 +357,12 @@ class App(SimpleHTTPRequestHandler):
 
 if __name__ == "__main__":
     load_meetings()
-    # `directory` evita depender do diretório de onde o operador executou o comando.
-    server = ThreadingHTTPServer(("127.0.0.1", 8787), partial(App, directory=str(ROOT)))
-    print("Painel disponível em http://127.0.0.1:8787")
+    host = os.environ.get("HOST", "127.0.0.1")
+    port = int(os.environ.get("PORT", "8787"))
+    if host not in {"127.0.0.1", "localhost", "::1"} and not os.environ.get("PANEL_PASSWORD"):
+        raise SystemExit("PANEL_PASSWORD é obrigatório quando o painel é exposto publicamente.")
+    server = ThreadingHTTPServer((host, port), partial(App, directory=str(ROOT)))
+    print(f"Painel disponível em http://{host}:{port}")
     print("Use Ctrl+C para parar o painel. Os robôs em execução receberão SIGTERM.")
     try:
         server.serve_forever()

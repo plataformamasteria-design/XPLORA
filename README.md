@@ -38,3 +38,23 @@ Abra `http://127.0.0.1:8787`. O painel só aceita conexões locais.
 O painel passa `MEET_RECORDINGS_DIR` e `MEET_MAX_MINUTES=0` ao processo. O áudio `.monitor` é detectado automaticamente e `0` significa duração ilimitada.
 
 Use somente em reuniões com aviso e autorização de todos os participantes.
+
+## Railway
+
+O projeto inclui `Dockerfile`, `start.sh` e `railway.toml`. O contêiner cria uma tela
+virtual e uma saída PulseAudio virtual, permitindo que o Chromium reproduza o áudio
+capturado pelo FFmpeg.
+
+Configure no serviço:
+
+- `PANEL_PASSWORD`: senha obrigatória recomendada para proteger o painel público.
+- `MEET_BOT_NAME`: nome exibido pelo convidado no Meet.
+- `WHISPER_MODEL`: modelo local, por padrão `small`.
+
+Monte um volume persistente em `/app/storage`. Sem esse volume, perfil, gravações
+e transcrições serão perdidos quando o serviço reiniciar. Nunca monte o volume em
+`/app`, pois isso esconderia os arquivos do programa dentro do contêiner.
+
+Em nuvem o robô entra como convidado. A reunião precisa permitir convidados e o
+organizador pode precisar aprovar sua entrada. Um login Google manual não é viável
+sem adicionar acesso remoto seguro à sessão gráfica.

@@ -7,3 +7,9 @@ build/
 *.log
 SyncGit.exe
 accounts.txt
+perfil-meet/
+recordings/
+data/
+storage/
+__pycache__/
+*.pyc
