@@ -108,6 +108,12 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(result["status"], "stopping")
         thread.assert_called_once()
 
+    def test_empty_post_body_is_accepted_for_stop_route(self):
+        handler = meet_control.App.__new__(meet_control.App)
+        handler.headers = {"Content-Length": "0"}
+        handler.rfile = io.BytesIO()
+        self.assertEqual(handler.read_json(), {})
+
     def test_srt_timestamp(self):
         self.assertEqual(srt_timestamp(3661.125), "01:01:01,125")
 

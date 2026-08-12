@@ -415,6 +415,8 @@ class App(SimpleHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", "0"))
         if length > 100_000:
             raise ValueError("Solicitação grande demais.")
+        if length == 0:
+            return {}
         return json.loads(self.rfile.read(length))
 
     def do_GET(self) -> None:
