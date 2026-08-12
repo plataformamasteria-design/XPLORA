@@ -18,7 +18,7 @@ COPY requirements.txt ./
 RUN pip install -r requirements.txt \
     && playwright install --with-deps chromium \
     && apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg pulseaudio pulseaudio-utils xvfb \
+    && apt-get install -y --no-install-recommends ffmpeg pulseaudio pulseaudio-utils xvfb gosu \
     && rm -rf /var/lib/apt/lists/*
 
 RUN useradd --create-home --uid 10001 meetbot \
@@ -28,6 +28,5 @@ RUN useradd --create-home --uid 10001 meetbot \
 COPY --chown=meetbot:meetbot . .
 RUN chmod +x /app/start.sh
 
-USER meetbot
 EXPOSE 8787
 CMD ["/app/start.sh"]

@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [ "$(id -u)" = "0" ]; then
+  mkdir -p /app/storage/recordings /app/storage/perfil-meet /app/storage/data /run/user/10001 /tmp/.X11-unix
+  chown -R meetbot:meetbot /app/storage /run/user/10001
+  chmod 1777 /tmp/.X11-unix
+  exec gosu meetbot "$0" "$@"
+fi
+
 export DISPLAY="${DISPLAY:-:99}"
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/10001}"
 
