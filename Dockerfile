@@ -2,6 +2,7 @@ FROM python:3.11-bookworm
 
 ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
+    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
     DISPLAY=:99 \
     HOST=0.0.0.0 \
     PORT=8787 \
@@ -23,7 +24,8 @@ RUN pip install -r requirements.txt \
 
 RUN useradd --create-home --uid 10001 meetbot \
     && mkdir -p /app/storage/recordings /app/storage/perfil-meet /app/storage/data /run/user/10001 \
-    && chown -R meetbot:meetbot /app /run/user/10001
+    && chown -R meetbot:meetbot /app /run/user/10001 \
+    && chmod -R a+rX /ms-playwright
 
 COPY --chown=meetbot:meetbot . .
 RUN chmod +x /app/start.sh
