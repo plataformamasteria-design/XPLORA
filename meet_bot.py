@@ -75,7 +75,7 @@ def first_aria_button(page, pattern: re.Pattern[str]):
     for selector in ("button[aria-label]", "[role=button][aria-label]"):
         for button in page.locator(selector).all():
             label = button.get_attribute("aria-label") or ""
-            if pattern.search(label):
+            if pattern.search(label) and button.is_visible():
                 return button
     return None
 
@@ -94,22 +94,25 @@ def turn_off_devices(page) -> None:
 
 def click_join(page) -> bool:
     for pattern in JOIN_PATTERNS:
-        button = page.get_by_role("button", name=re.compile(pattern, re.I))
-        if button.count():
-            button.first.click(timeout=3_000)
-            log("Pedido para entrar na reunião enviado.")
-            return True
+        for button in page.get_by_role("button", name=re.compile(pattern, re.I)).all():
+            if button.is_visible() and button.is_enabled():
+                button.click(timeout=3_000)
+                log("Pedido para entrar na reunião enviado.")
+                return True
     return False
 
 
 def fill_guest_name(page) -> None:
     name = os.environ.get("MEET_BOT_NAME", "Assistente de Transcrição")
     for pattern in (r"your name", r"seu nome", r"nome"):
-        field = page.get_by_placeholder(re.compile(pattern, re.I))
-        if field.count():
-            field.first.fill(name)
-            log(f"Nome de convidado definido: {name}")
-            return
+        for field in page.get_by_placeholder(re.compile(pattern, re.I)).all():
+            if field.is_visible() and field.is_enabled():
+                try:
+                    field.fill(name, timeout=3_000)
+                    log(f"Nome de convidado definido: {name}")
+                    return
+                except Exception as error:
+                    log(f"Campo de nome mudou durante o preenchimento; tentando novamente: {error}")
 
 
 def page_denied(page) -> bool:
