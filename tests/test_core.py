@@ -70,6 +70,28 @@ class CoreTests(unittest.TestCase):
             self.assertTrue(finished.wait(2))
         self.assertEqual(meet_control.MEETINGS[meeting_id]["status"], "transcribed")
 
+    def test_intentional_stop_while_waiting_is_removed(self):
+        meeting_id = "meeting-waiting"
+        process = FakeProcess(["Entrada cancelada pelo operador."], code=1)
+        meet_control.MEETINGS[meeting_id] = {
+            "id": meeting_id, "status": "stopping", "logs": [], "stop_requested": True,
+        }
+        meet_control.PROCESSES[meeting_id] = process
+        finished = threading.Event()
+
+        def save():
+            if meeting_id not in meet_control.PROCESSES:
+                finished.set()
+
+        with patch("meet_control.save_meetings", side_effect=save):
+            meet_control.new_log_reader(meeting_id, process, "bot")
+            self.assertTrue(finished.wait(2))
+        self.assertEqual(meet_control.MEETINGS[meeting_id]["status"], "removed")
+
+    def test_inactive_meeting_message_is_retryable(self):
+        message = "You can't join this video call"
+        self.assertIsNotNone(meet_bot.WAITABLE_DENIAL_PATTERN.search(message))
+
     def test_single_active_bot_guard(self):
         meet_control.MEETINGS["active"] = {"id": "active", "name": "Atual", "status": "starting"}
         meet_control.PROCESSES["active"] = FakeProcess()

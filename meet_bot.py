@@ -27,6 +27,7 @@ LEAVE_PATTERN = re.compile(r"leave call|leave meeting|sair da chamada|sair da re
 MIC_OFF_PATTERN = re.compile(r"turn off microphone|desativar microfone", re.I)
 CAMERA_OFF_PATTERN = re.compile(r"turn off camera|desativar c.mera", re.I)
 DENIED_PATTERN = re.compile(r"can't join|cannot join|n.o foi poss.vel participar|n.o pode participar|reuni.o encerrada", re.I)
+WAITABLE_DENIAL_PATTERN = re.compile(r"can't join this video call|cannot join this video call|n.o pode participar desta videochamada", re.I)
 
 
 class BotError(RuntimeError):
@@ -141,10 +142,13 @@ def save_diagnostic(page, label: str) -> None:
         log(f"Não foi possível salvar o diagnóstico do Meet: {error}")
 
 
-def wait_for_admission(page, timeout_seconds: int) -> None:
+def wait_for_admission(page, timeout_seconds: int, meeting_url: str) -> None:
     """Aguarda a sala de espera e só inicia captura quando o Meet liberar a entrada."""
     deadline = time.monotonic() + timeout_seconds
     requested = False
+    request_was_sent = False
+    denial_diagnosed = False
+    last_retry = 0.0
     last_media_check = 0.0
     while not STOP_REQUESTED.is_set():
         if time.monotonic() > deadline:
@@ -159,14 +163,27 @@ def wait_for_admission(page, timeout_seconds: int) -> None:
             fill_guest_name(page)
             requested = click_join(page)
             if requested:
+                request_was_sent = True
                 log("Aguardando aprovação do organizador, quando exigida.")
                 page.wait_for_timeout(1_000)
                 continue
         denial = page_denied(page)
         if denial:
-            log(f"Mensagem visível do Meet: {denial}")
-            save_diagnostic(page, "entrada_recusada")
-            fail("O Meet recusou a entrada. Verifique se a reunião está ativa e permite convidados.")
+            if not denial_diagnosed:
+                log(f"Mensagem visível do Meet: {denial}")
+                save_diagnostic(page, "entrada_recusada")
+                denial_diagnosed = True
+            if request_was_sent or not WAITABLE_DENIAL_PATTERN.search(denial):
+                log(f"Entrada recusada definitivamente pelo Meet: {denial}")
+                fail("O Meet recusou a entrada. Verifique se a reunião está ativa e permite convidados.")
+            if time.monotonic() - last_retry >= 10:
+                remaining = max(0, int(deadline - time.monotonic()))
+                log(f"A reunião ainda não liberou convidados; nova tentativa automática ({remaining}s restantes).")
+                page.goto(meeting_url, wait_until="domcontentloaded", timeout=30_000)
+                requested = False
+                last_retry = time.monotonic()
+                page.wait_for_timeout(1_000)
+                continue
         page.wait_for_timeout(1_000)
     fail("Entrada cancelada pelo operador.")
 
@@ -302,7 +319,7 @@ def main() -> int:
             page = context.pages[0] if context.pages else context.new_page()
             log("Abrindo Google Meet. Faça login manualmente na primeira execução, se necessário.")
             page.goto(args.url, wait_until="domcontentloaded", timeout=60_000)
-            wait_for_admission(page, args.join_timeout)
+            wait_for_admission(page, args.join_timeout, args.url)
             joined = True
             if args.record:
                 recorder.start()

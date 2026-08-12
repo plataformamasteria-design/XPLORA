@@ -173,7 +173,9 @@ def new_log_reader(meeting_id: str, process: subprocess.Popen[str], mode: str) -
                 return
             intentional = bool(meeting.get("stop_requested"))
             if mode == "bot":
-                if code == 0 and meeting.get("status") == "transcribed":
+                if intentional and meeting.get("status") not in {"transcribing", "transcribed"}:
+                    meeting["status"] = "removed"
+                elif code == 0 and meeting.get("status") == "transcribed":
                     pass
                 elif code == 0:
                     meeting["status"] = "removed" if intentional else "finished"
