@@ -11,6 +11,9 @@ fi
 export DISPLAY="${DISPLAY:-:99}"
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/10001}"
 
+# Clean up stale X11 lock files from previous runs
+rm -f /tmp/.X99-lock /tmp/.X${DISPLAY#:}-lock 2>/dev/null || true
+
 Xvfb "$DISPLAY" -screen 0 1920x1080x24 -ac +extension RANDR &
 pulseaudio --start --exit-idle-time=-1
 
@@ -25,3 +28,4 @@ pactl load-module module-null-sink sink_name=meet_output sink_properties=device.
 pactl set-default-sink meet_output
 
 exec python /app/meet_control.py
+
